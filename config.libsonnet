@@ -21,6 +21,10 @@
       },
       standalone: false,  // this one is fixed for now, only clustered mode supported
       node_count: if self.standalone then 1 else 3,  // Cluster
+      prometheus: {
+        port: 7000,
+        scrape: true,
+      },
     },
   },
 

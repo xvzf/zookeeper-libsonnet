@@ -7,6 +7,7 @@ local kausal = (import 'ksonnet-util/kausal.libsonnet');
   local k = kausal { _config+:: this._config },
 
   local container = k.core.v1.container,
+  local containerPort = k.core.v1.containerPort,
   local volumeMount = k.core.v1.volumeMount,
   local statefulSet = k.apps.v1.statefulSet,
   local service = k.core.v1.service,
@@ -41,10 +42,14 @@ local kausal = (import 'ksonnet-util/kausal.libsonnet');
         node_2: '%(sts_name)s-2.%(service_name_headless)s.%(namespace)s.svc.%(cluster_domain)s' % config,
       },
 
+      local configValues = node_dns {
+        prometheus_port: std.toString(config.prometheus.port),
+      },
+
       // Generate configuration for every node
-      ['%(sts_name)s-0.cfg' % config]: (importstr './config/zookeeper.cfg') % node_dns { node_0: '0.0.0.0' },
-      ['%(sts_name)s-1.cfg' % config]: (importstr './config/zookeeper.cfg') % node_dns { node_1: '0.0.0.0' },
-      ['%(sts_name)s-2.cfg' % config]: (importstr './config/zookeeper.cfg') % node_dns { node_2: '0.0.0.0' },
+      ['%(sts_name)s-0.cfg' % config]: (importstr './config/zookeeper.cfg') % configValues { node_0: '0.0.0.0' },
+      ['%(sts_name)s-1.cfg' % config]: (importstr './config/zookeeper.cfg') % configValues { node_1: '0.0.0.0' },
+      ['%(sts_name)s-2.cfg' % config]: (importstr './config/zookeeper.cfg') % configValues { node_2: '0.0.0.0' },
     }),
 
   pdb:
@@ -58,9 +63,10 @@ local kausal = (import 'ksonnet-util/kausal.libsonnet');
     container.withCommand(['/bin/bash']) +
     container.withArgs(['-c', (importstr './config/zookeeper_startup.sh') % config]) +
     container.withPorts([
-      k.core.v1.containerPort.new('tcp-client', 2181),
-      k.core.v1.containerPort.new('tcp-server', 2888),
-      k.core.v1.containerPort.new('tcp-election', 3888),
+      containerPort.new('tcp-client', 2181),
+      containerPort.new('tcp-server', 2888),
+      containerPort.new('tcp-election', 3888),
+      containerPort.new('http-metrics', config.prometheus.port),
     ]) +
     container.withVolumeMountsMixin([
       volumeMount.new('zookeeper-data', '/data'),
@@ -81,6 +87,10 @@ local kausal = (import 'ksonnet-util/kausal.libsonnet');
     ) +
     statefulSet.spec.template.spec.withServiceAccountName(self.k8s_sa.metadata.name) +
     statefulSet.metadata.withLabelsMixin(config.labels) +
+    statefulSet.mixin.spec.template.metadata.withAnnotations({
+      'prometheus.io.port': std.toString(config.prometheus.port),
+      'prometheus.io.scrape': std.toString(config.prometheus.scrape),
+    }) +
     statefulSet.spec.withServiceName(config.service_name_headless) +
     k.util.configMapVolumeMount(this.cm, '/k8s-config') +
     statefulSet.spec.withVolumeClaimTemplatesMixin([
