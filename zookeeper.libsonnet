@@ -99,6 +99,7 @@ k {
         containers=[self.zookeeper_container],
         podLabels=config.labels,
       )
+      + statefulSet.spec.template.spec.withServiceAccountName(self.k8s_sa.metadata.name)
       + statefulSet.metadata.withLabelsMixin(config.labels)
       // FIXME enable istio mTLS for the datastore
       + statefulSet.spec.template.metadata.withAnnotations({ 'sidecar.istio.io/inject': 'false' })
