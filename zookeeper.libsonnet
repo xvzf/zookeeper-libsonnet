@@ -1,45 +1,20 @@
-local k = (import 'ksonnet-util/kausal.libsonnet');
+local kausal = (import 'ksonnet-util/kausal.libsonnet');
 
-k {
-  _config+:: {
+(import 'config.libsonnet')
++ {
 
-    zookeeper+: {
-      name: 'zookeeper',
-      namespace: $._config.namespace,
+  local this = self,
+  local k = kausal { _config+:: this._config },
 
-      cluster_domain: 'cluster.local',
+  local container = k.core.v1.container,
+  local volumeMount = k.core.v1.volumeMount,
+  local statefulSet = k.apps.v1.statefulSet,
+  local service = k.core.v1.service,
+  local pvc = k.core.v1.persistentVolumeClaim,
+  local pdb = k.policy.v1beta1.podDisruptionBudget,
 
-      pvc_class: 'standard',
-      data_pvc_size: '2Gi',
-      log_pvc_size: '2Gi',
-
-      service_name: self.name,
-      service_name_headless: '%(name)s-headless' % self,
-      sa_name: self.name,
-      sts_name: self.name,
-      cm_name: self.name,
-      labels: {
-        app: 'zookeeper',
-      },
-      standalone: false,  // this one is fixed for now, only clustered mode supported
-      node_count: if self.standalone then 1 else 3,  // Cluster
-    },
-  },
-
-  _images+:: {
-    zookeeper: 'zookeeper:3.7.0',
-  },
-
-  zookeeper: {
-    local container = $.core.v1.container,
-    local volumeMount = $.core.v1.volumeMount,
-    local statefulSet = $.apps.v1.statefulSet,
-    local service = $.core.v1.service,
-    local pvc = $.core.v1.persistentVolumeClaim,
-    local pdb = $.policy.v1beta1.podDisruptionBudget,
-
-    local config = $._config.zookeeper,
-    local images = $._images,
+  local config = $._config.zookeeper,
+  local images = $._images,
 
     k8s_sa:
       $.core.v1.serviceAccount.new(config.sa_name)
@@ -133,6 +108,5 @@ k {
       + service.spec.withPorts([
         { name: 'tcp-client', port: 2181 },
       ]),
-  },
 
 }
