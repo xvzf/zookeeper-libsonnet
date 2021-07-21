@@ -36,6 +36,7 @@ k {
     local statefulSet = $.apps.v1.statefulSet,
     local service = $.core.v1.service,
     local pvc = $.core.v1.persistentVolumeClaim,
+    local pdb = $.policy.v1beta1.podDisruptionBudget,
 
     local config = $._config.zookeeper,
     local images = $._images,
@@ -70,6 +71,12 @@ k {
         ['%(sts_name)s-1.cfg' % config]: (importstr './config/zookeeper.cfg') % node_dns { node_1: '0.0.0.0' },
         ['%(sts_name)s-2.cfg' % config]: (importstr './config/zookeeper.cfg') % node_dns { node_2: '0.0.0.0' },
       }),
+
+    pdb:
+      pdb.new(config.name)
+      + pdb.spec.selector.withMatchLabels(config.labels)
+      + pdb.spec.withMaxUnavailable(1)
+,
 
     zookeeper_container::
       container.new('zookeeper', images.zookeeper)
