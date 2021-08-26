@@ -3,7 +3,7 @@
 
     zookeeper+: {
       name: 'zookeeper',
-      namespace: $._config.namespace,
+      namespace: 'zookeeper',
 
       cluster_domain: 'cluster.local',
 
