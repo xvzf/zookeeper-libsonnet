@@ -1,48 +1,26 @@
-local k = (import 'ksonnet-util/kausal.libsonnet');
+local kausal = (import 'ksonnet-util/kausal.libsonnet');
 
-k {
-  _config+:: {
-
-    zookeeper+: {
-      name: 'zookeeper',
-      namespace: $._config.namespace,
-
-      cluster_domain: 'cluster.local',
-
-      pvc_class: 'standard',
-      data_pvc_size: '2Gi',
-      log_pvc_size: '2Gi',
-
-      service_name: self.name,
-      service_name_headless: '%(name)s-headless' % self,
-      sa_name: self.name,
-      sts_name: self.name,
-      cm_name: self.name,
-      labels: {
-        app: 'zookeeper',
-      },
-      standalone: false,  // this one is fixed for now, only clustered mode supported
-      node_count: if self.standalone then 1 else 3,  // Cluster
-    },
-  },
-
-  _images+:: {
-    zookeeper: 'zookeeper:3.7.0',
-  },
+(import 'config.libsonnet')
++ {
 
   zookeeper: {
-    local container = $.core.v1.container,
-    local volumeMount = $.core.v1.volumeMount,
-    local statefulSet = $.apps.v1.statefulSet,
-    local service = $.core.v1.service,
-    local pvc = $.core.v1.persistentVolumeClaim,
+    local this = self,
+    local k = kausal { _config+:: this._config },
+
+    local container = k.core.v1.container,
+    local containerPort = k.core.v1.containerPort,
+    local volumeMount = k.core.v1.volumeMount,
+    local statefulSet = k.apps.v1.statefulSet,
+    local service = k.core.v1.service,
+    local pvc = k.core.v1.persistentVolumeClaim,
+    local pdb = k.policy.v1beta1.podDisruptionBudget,
 
     local config = $._config.zookeeper,
     local images = $._images,
 
     k8s_sa:
-      $.core.v1.serviceAccount.new(config.sa_name)
-      + $.core.v1.serviceAccount.metadata.withLabelsMixin(config.labels),
+      k.core.v1.serviceAccount.new(config.sa_name)
+      + k.core.v1.serviceAccount.metadata.withLabelsMixin(config.labels),
 
     data_pvc::
       pvc.new('zookeeper-data')
@@ -57,40 +35,49 @@ k {
       + pvc.spec.withStorageClassName(config.pvc_class),
 
     cm:
-      $.core.v1.configMap.new(config.cm_name)
-      + $.core.v1.configMap.withDataMixin({
+      k.core.v1.configMap.new(config.cm_name)
+      + k.core.v1.configMap.withDataMixin({
         local node_dns = {
           node_0: '%(sts_name)s-0.%(service_name_headless)s.%(namespace)s.svc.%(cluster_domain)s' % config,
           node_1: '%(sts_name)s-1.%(service_name_headless)s.%(namespace)s.svc.%(cluster_domain)s' % config,
           node_2: '%(sts_name)s-2.%(service_name_headless)s.%(namespace)s.svc.%(cluster_domain)s' % config,
         },
 
+        local configValues = node_dns {
+          prometheus_port: std.toString(config.prometheus.port),
+        },
+
         // Generate configuration for every node
-        ['%(sts_name)s-0.cfg' % config]: (importstr './config/zookeeper.cfg') % node_dns { node_0: '0.0.0.0' },
-        ['%(sts_name)s-1.cfg' % config]: (importstr './config/zookeeper.cfg') % node_dns { node_1: '0.0.0.0' },
-        ['%(sts_name)s-2.cfg' % config]: (importstr './config/zookeeper.cfg') % node_dns { node_2: '0.0.0.0' },
+        ['%(sts_name)s-0.cfg' % config]: (importstr './config/zookeeper.cfg') % configValues { node_0: '0.0.0.0' },
+        ['%(sts_name)s-1.cfg' % config]: (importstr './config/zookeeper.cfg') % configValues { node_1: '0.0.0.0' },
+        ['%(sts_name)s-2.cfg' % config]: (importstr './config/zookeeper.cfg') % configValues { node_2: '0.0.0.0' },
       }),
+
+    pdb:
+      pdb.new(config.name)
+      + pdb.spec.selector.withMatchLabels(config.labels)
+      + pdb.spec.withMaxUnavailable(1)
+    ,
 
     zookeeper_container::
       container.new('zookeeper', images.zookeeper)
       + container.withCommand(['/bin/bash'])
       + container.withArgs(['-c', (importstr './config/zookeeper_startup.sh') % config])
       + container.withPorts([
-        $.core.v1.containerPort.new('tcp-client', 2181),
-        $.core.v1.containerPort.new('tcp-server', 2888),
-        $.core.v1.containerPort.new('tcp-election', 3888),
+        containerPort.new('tcp-client', 2181),
+        containerPort.new('tcp-server', 2888),
+        containerPort.new('tcp-election', 3888),
+        containerPort.new('http-metrics', config.prometheus.port),
       ])
       + container.withVolumeMountsMixin([
         volumeMount.new('zookeeper-data', '/data'),
         volumeMount.new('zookeeper-log', '/datalog'),
-        volumeMount.new('zookeeper-k8s-config', '/k8s-config'),
       ])
       + container.withEnvMixin([
-        $.core.v1.envVar.fromFieldPath('NODE_NAME', 'metadata.name'),
+        k.core.v1.envVar.fromFieldPath('NODE_NAME', 'metadata.name'),
       ])
-      // FIXME revisit after performance evaluation
-      + $.util.resourcesRequests('500m', '512Mi')
-      + $.util.resourcesLimits('1000m', '768Mi'),
+      + k.util.resourcesRequests('500m', '512Mi')
+      + k.util.resourcesLimits('1000m', '768Mi'),
 
     sts:
       statefulSet.new(
@@ -99,32 +86,34 @@ k {
         containers=[self.zookeeper_container],
         podLabels=config.labels,
       )
+      + statefulSet.spec.template.spec.withServiceAccountName(self.k8s_sa.metadata.name)
       + statefulSet.metadata.withLabelsMixin(config.labels)
-      // FIXME enable istio mTLS for the datastore
-      + statefulSet.spec.template.metadata.withAnnotations({ 'sidecar.istio.io/inject': 'false' })
+      + statefulSet.mixin.spec.template.metadata.withAnnotations({
+        'prometheus.io.port': std.toString(config.prometheus.port),
+        'prometheus.io.scrape': std.toString(config.prometheus.scrape),
+      })
       + statefulSet.spec.withServiceName(config.service_name_headless)
-      + statefulSet.spec.template.spec.withVolumesMixin([
-        $.core.v1.volume.fromConfigMap('zookeeper-k8s-config', configMapName=config.cm_name),
-      ])
+      + k.util.configMapVolumeMount(this.cm, '/k8s-config')
       + statefulSet.spec.withVolumeClaimTemplatesMixin([
         self.data_pvc,
         self.log_pvc,
       ])
-      + $.util.antiAffinityStatefulSet,
+      + k.util.antiAffinityStatefulSet,
 
     svc_headless:
-      $.util.serviceFor(self.sts, nameFormat='%(port)s')
+      k.util.serviceFor(self.sts, nameFormat='%(port)s')
       + service.metadata.withName(config.service_name_headless)
       + service.spec.withPublishNotReadyAddresses(true)
       + service.spec.withClusterIP('None')
       + { spec+: { ports:: [] } },
 
     svc_client:
-      $.util.serviceFor(self.sts)
+      k.util.serviceFor(self.sts)
       + service.metadata.withName(config.service_name)
       + service.spec.withPorts([
         { name: 'tcp-client', port: 2181 },
       ]),
+
   },
 
 }
